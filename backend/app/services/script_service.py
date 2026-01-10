@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,7 +28,7 @@ def _format_timestamp(seconds: int) -> str:
 
 def _write_srt(contents: str, outputs_dir: Path) -> str:
     outputs_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     filename = f"captions_{timestamp}_{uuid4().hex[:8]}.srt"
     path = outputs_dir / filename
     path.write_text(contents, encoding="utf-8")
