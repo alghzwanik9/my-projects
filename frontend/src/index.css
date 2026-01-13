@@ -1,7 +1,7 @@
 :root {
-  font-family: "Inter", system-ui, sans-serif;
-  color: #0f172a;
-  background-color: #f8fafc;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  color: #fff;
+  background-color: #0b0f19;
 }
 
 * {
@@ -28,11 +28,12 @@ h1 {
 }
 
 .card {
-  background: #fff;
-  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
   padding: 20px;
   margin-bottom: 20px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
 }
 
 form label {
@@ -45,10 +46,18 @@ form label {
 textarea,
 input,
 select {
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid #cbd5f5;
-  font-size: 14px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  font-size: 15px;
+  outline: none;
+}
+
+textarea::placeholder,
+input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
 }
 
 textarea {
@@ -64,13 +73,18 @@ textarea {
 }
 
 button {
-  background: #2563eb;
-  color: white;
+  background: #ffffff;
+  color: #0b0f19;
   border: none;
-  padding: 12px 20px;
-  border-radius: 8px;
-  font-weight: 600;
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-weight: 700;
   cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+button:hover:not(:disabled) {
+  opacity: 0.9;
 }
 
 button:disabled {
@@ -79,8 +93,9 @@ button:disabled {
 }
 
 .error {
-  color: #b91c1c;
+  color: #ff6b6b;
   margin-top: 12px;
+  font-size: 14px;
 }
 
 .results {
@@ -99,8 +114,17 @@ pre {
 .download {
   display: inline-block;
   margin-top: 12px;
-  color: #2563eb;
+  color: #fff;
+  text-decoration: none;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 10px 14px;
+  border-radius: 14px;
   font-weight: 600;
+  transition: background 0.2s;
+}
+
+.download:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 table {

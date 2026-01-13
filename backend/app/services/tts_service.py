@@ -1,54 +1,101 @@
-import os
-from uuid import uuid4
+"""
+خدمة تحويل النص إلى كلام باستخدام Edge TTS (Microsoft)
+يوفر أصوات طبيعية جداً مقارنة بـ gTTS
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
 from pathlib import Path
 
-import requests
-from fastapi import HTTPException
+logger = logging.getLogger(__name__)
 
-from app.config import OUTPUTS_DIR
+# صوت ذكوري عربي طبيعي من Microsoft Edge TTS
+ARABIC_MALE_VOICE = "ar-SA-HamedNeural"  # صوت ذكوري سعودي طبيعي جداً
 
 
-def synthesize_to_mp3(text: str, voice_id: str | None = None) -> dict:
-    text = (text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Text is required.")
-
-    api_key = os.getenv("ELEVENLABS_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=400, detail="Missing ELEVENLABS_API_KEY.")
-
-    resolved_voice_id = (voice_id or os.getenv("ELEVENLABS_VOICE_ID") or "").strip()
-    if not resolved_voice_id:
-        raise HTTPException(status_code=400, detail="Missing ELEVENLABS_VOICE_ID.")
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{resolved_voice_id}"
-    headers = {
-        "xi-api-key": api_key,
-        "Accept": "audio/mpeg",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "text": text,
-        "model_id": "eleven_multilingual_v2",
-    }
-
+async def generate_speech_edge(text: str, output_path: Path, voice: str = ARABIC_MALE_VOICE) -> Path:
+    """
+    إنشاء ملف صوتي باستخدام Edge TTS
+    
+    Args:
+        text: النص المراد تحويله
+        output_path: مسار ملف الصوت الناتج
+        voice: معرف الصوت (افتراضي: صوت ذكوري عربي)
+    
+    Returns:
+        مسار الملف الصوتي المُنشأ
+    
+    Raises:
+        ImportError: إذا كانت المكتبة غير مثبتة
+        ConnectionError: إذا فشل الاتصال
+        Exception: أي أخطاء أخرى
+    """
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"ElevenLabs request failed: {e}")
+        import edge_tts
+        import asyncio
+        
+        # إنشاء الملف الصوتي مع timeout
+        communicate = edge_tts.Communicate(text, voice)
+        
+        # محاولة الحفظ مع timeout (30 ثانية)
+        try:
+            await asyncio.wait_for(communicate.save(str(output_path)), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.error("Edge TTS timeout - connection took too long")
+            raise ConnectionError("Edge TTS connection timeout")
+        
+        logger.info(f"Edge TTS audio generated: {output_path} (voice: {voice})")
+        return output_path
+        
+    except ImportError:
+        logger.warning("edge-tts not installed, falling back to gTTS")
+        raise ImportError("edge-tts library not installed. Install with: pip install edge-tts")
+    except (ConnectionError, OSError, TimeoutError) as e:
+        # أخطاء الاتصال - نرفعها للتعامل معها في main.py
+        logger.error(f"Edge TTS connection error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Edge TTS failed: {e}", exc_info=True)
+        raise
 
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=resp.text)
 
-    run_id = uuid4().hex
-    out_dir = Path(OUTPUTS_DIR) / run_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+def generate_speech_sync(text: str, output_path: Path, voice: str = ARABIC_MALE_VOICE) -> Path:
+    """
+    نسخة متزامنة من generate_speech_edge
+    """
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    return loop.run_until_complete(generate_speech_edge(text, output_path, voice))
 
-    out_file = out_dir / "voice.mp3"
-    out_file.write_bytes(resp.content)
 
-    return {
-        "run_id": run_id,
-        "audio_path": f"outputs/{run_id}/voice.mp3",
-        "url": f"/outputs/{run_id}/voice.mp3",
-    }
+def get_available_voices(language: str = "ar") -> list[dict]:
+    """
+    الحصول على قائمة الأصوات المتاحة للغة معينة
+    
+    Returns:
+        قائمة من القواميس تحتوي على معلومات الأصوات
+    """
+    try:
+        import edge_tts
+        
+        async def _get_voices():
+            voices = await edge_tts.list_voices()
+            return [v for v in voices if language in v.get("Locale", "").lower()]
+        
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(_get_voices())
+    except ImportError:
+        return []
+    except Exception as e:
+        logger.error(f"Failed to get voices: {e}")
+        return []

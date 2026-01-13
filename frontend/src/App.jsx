@@ -1,10 +1,10 @@
 import { useState } from "react";
 
+// استخدام proxy في development أو URL مباشر في production
+const API_BASE = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
+
 const defaultForm = {
-  prompt: "",
-  duration: 30,
-  language: "en",
-  tone: "friendly",
+  text: "",
 };
 
 export default function App() {
@@ -23,21 +23,35 @@ export default function App() {
     setError("");
     setResult(null);
 
+    const text = form.text.trim();
+    
+    // Validation
+    if (!text) {
+      setError("اكتب نص أولاً");
+      setLoading(false);
+      return;
+    }
+    if (text.length < 10) {
+      setError("النص قصير جداً. يجب أن يكون 10 أحرف على الأقل");
+      setLoading(false);
+      return;
+    }
+    if (text.length > 2000) {
+      setError("النص طويل جداً. الحد الأقصى 2000 حرف");
+      setLoading(false);
+      return;
+    }
+
     try {
-      const response = await fetch("http://localhost:8000/api/generate", {
+      const response = await fetch(`${API_BASE}/api/generate-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: form.prompt,
-          duration: Number(form.duration),
-          language: form.language,
-          tone: form.tone,
-        }),
+        body: JSON.stringify({ text }),
       });
 
       if (!response.ok) {
         const details = await response.json();
-        throw new Error(details.detail || "Failed to generate.");
+        throw new Error(details.detail || "فشل الطلب");
       }
 
       const data = await response.json();
@@ -49,98 +63,75 @@ export default function App() {
     }
   };
 
+  const loadDemoText = () => {
+    setForm({
+      text: `هل تعلم أن الذكاء الاصطناعي لا يفهم مثل الإنسان؟
+لكنه يتعلّم من البيانات ويكتشف الأنماط.
+لهذا تراه في التوصيات والترجمة والبحث.
+تابع AI Explained | بالعربي للمزيد.`
+    });
+  };
+
   return (
     <div className="page">
       <header>
-        <h1>Short Video MVP</h1>
-        <p>Generate a script, scenes, and captions from a simple prompt.</p>
+        <h1>🎬 AI Shorts Generator — Arabic</h1>
+        <p>✨ صوت ذكوري طبيعي • خلفيات ذكية • جودة عالية ✨</p>
       </header>
 
       <form className="card" onSubmit={handleSubmit}>
         <label>
-          Prompt
+          نص الفيديو
           <textarea
-            value={form.prompt}
-            onChange={updateField("prompt")}
-            placeholder="e.g., 5 tips for better focus"
+            value={form.text}
+            onChange={updateField("text")}
+            placeholder="اكتب نص الفيديو هنا..."
             required
+            rows={6}
           />
         </label>
 
-        <div className="grid">
-          <label>
-            Duration (seconds)
-            <input
-              type="number"
-              min="15"
-              max="60"
-              value={form.duration}
-              onChange={updateField("duration")}
-              required
-            />
-          </label>
-
-          <label>
-            Language
-            <select value={form.language} onChange={updateField("language")}>
-              <option value="en">English</option>
-              <option value="ar">Arabic</option>
-            </select>
-          </label>
-
-          <label>
-            Tone
-            <input
-              type="text"
-              value={form.tone}
-              onChange={updateField("tone")}
-              placeholder="friendly, bold, calm"
-              required
-            />
-          </label>
+        <div style={{ display: "flex", gap: "10px", marginTop: "12px", flexWrap: "wrap" }}>
+          <button type="submit" disabled={loading} style={{ flex: 1, minWidth: "150px" }}>
+            {loading ? "⏳ جاري الإنشاء..." : "🎬 إنشاء الفيديو"}
+          </button>
+          <button type="button" onClick={loadDemoText} style={{ padding: "12px 16px" }}>
+            📝 نص تجريبي
+          </button>
         </div>
 
-        <button type="submit" disabled={loading}>
-          {loading ? "Generating..." : "Generate"}
-        </button>
-
-        {error && <p className="error">{error}</p>}
+        {error && <p className="error" style={{ color: "#ff6b6b", marginTop: "12px" }}>❌ {error}</p>}
       </form>
 
       {result && (
-        <section className="results">
+        <section className="results" style={{ marginTop: "24px" }}>
           <div className="card">
-            <h2>Script</h2>
-            <pre>{result.script}</pre>
-            <a className="download" href={`http://localhost:8000/${result.srt_path}`}>
-              Download SRT
-            </a>
-          </div>
-
-          <div className="card">
-            <h2>Scenes</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>Start</th>
-                  <th>End</th>
-                  <th>Narration</th>
-                  <th>On-screen text</th>
-                  <th>Visual hint</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.scenes.map((scene, index) => (
-                  <tr key={`${scene.start}-${index}`}>
-                    <td>{scene.start}s</td>
-                    <td>{scene.end}s</td>
-                    <td>{scene.narration}</td>
-                    <td>{scene.on_screen_text}</td>
-                    <td>{scene.visual_hint}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <h2>✅ تم إنشاء الفيديو بنجاح!</h2>
+            <video 
+              controls 
+              style={{ width: "100%", maxHeight: "720px", borderRadius: "12px", marginTop: "16px" }}
+              src={`${API_BASE}${result.video_url}?t=${Date.now()}`}
+            />
+            <div style={{ marginTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <a 
+                className="download" 
+                href={`${API_BASE}${result.video_url}`}
+                download
+                style={{
+                  display: "inline-block",
+                  color: "#fff",
+                  textDecoration: "none",
+                  border: "1px solid rgba(255, 255, 255, 0.18)",
+                  padding: "10px 14px",
+                  borderRadius: "14px"
+                }}
+              >
+                ⬇️ تحميل الفيديو
+              </a>
+              <div style={{ fontSize: "12px", color: "rgba(255, 255, 255, 0.65)", padding: "10px 14px" }}>
+                Run ID: {result.run_id}
+              </div>
+            </div>
           </div>
         </section>
       )}
