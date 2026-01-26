@@ -12,7 +12,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
-
 # -------------------------------------------------------------------------
 # 1) إعداد المسارات
 # -------------------------------------------------------------------------
@@ -54,20 +53,6 @@ except ImportError:
     generate_images_for_text = None
     print("⚠️ Warning: image_service.py or generate_images_for_text not found in app/services/")
 
-# (E) خدمة Pexels فيديو
-# (E) Scene planner + Pexels clips
-try:
-    from app.services.scene_planner import plan_search_terms
-except ImportError:
-    plan_search_terms = None
-    print("⚠️ Warning: scene_planner.py not found in app/services/")
-
-try:
-    from app.services.pexels_video_service import download_stock_clips
-except ImportError:
-    download_stock_clips = None
-    print("⚠️ Warning: pexels_video_service.py not found in app/services/")
-
 # -------------------------------------------------------------------------
 # 3) إعداد التطبيق
 # -------------------------------------------------------------------------
@@ -94,6 +79,7 @@ class VideoRequest(BaseModel):
     language: str = "ar"
     # اختياري: عدد الصور
     images_count: int = 3
+
 
 
 
@@ -130,8 +116,7 @@ async def generate_video(request: VideoRequest):
         # حفظ السكربت
         script_path = request_dir / "script.txt"
         script_path.write_text(input_text, encoding="utf-8")
-        
-        
+
         # -----------------------------
         # (A0) توليد صور متوافقة مع النص (اختياري)
         # -----------------------------
@@ -174,27 +159,10 @@ async def generate_video(request: VideoRequest):
             except Exception as e:
                 logger.warning(f"⚠️ Google TTS Failed: {e}")
 
-        
-        # -----------------------------
-        # (B0) تنزيل مقاطع Pexels (اختياري)
-        # -----------------------------
-        if download_stock_clips:
-            try:
-                clips_dir = request_dir / "clips"
-                clips_dir.mkdir(exist_ok=True)
+      
 
-                # نستخدم topic + كلمات من النص (أبسط شيء: topic ثم النص)
-                terms = []
-                if (request.topic or "").strip():
-                    terms.append(request.topic.strip())
-                terms.append(input_text[:60])  # جزء من النص كبحث
-
-                max_clips = 2  # عدّلها براحتك (1-4 أفضل)
-                logger.info(f"🎞️ Downloading Pexels clips (max={max_clips})...")
-                await asyncio.to_thread(download_stock_clips, terms, clips_dir, max_clips)
-                logger.info("✅ Pexels clips ready (if found).")
-            except Exception as e:
-                logger.warning(f"⚠️ Pexels download skipped: {e}")
+        if not audio_generated:
+            raise HTTPException(status_code=500, detail="فشل توليد الصوت بجميع الطرق.")
 
         # -----------------------------
         # (C) رندر الفيديو عبر render_shorts.py

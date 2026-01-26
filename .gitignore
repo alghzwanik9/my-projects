@@ -21,3 +21,12 @@ backend/tools/ffmpeg/
 
 # Logs
 *.log
+
+# local tests & secrets
+backend/app/test_key.py
+backend/app/test_images.py
+test_image.jpg
+
+# outputs
+backend/outputs/
+**/outputs/

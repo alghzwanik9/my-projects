@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 // استخدام proxy في development أو URL مباشر في production
-const API_BASE = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
+const API_BASE = "http://127.0.0.1:8000";
 
 const defaultForm = {
   text: "",
@@ -24,8 +24,7 @@ export default function App() {
     setResult(null);
 
     const text = form.text.trim();
-    
-    // Validation
+
     if (!text) {
       setError("اكتب نص أولاً");
       setLoading(false);
@@ -46,15 +45,15 @@ export default function App() {
       const response = await fetch(`${API_BASE}/api/generate-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, images_count: 0 }),
       });
 
+      const data = await response.json();
+
       if (!response.ok) {
-        const details = await response.json();
-        throw new Error(details.detail || "فشل الطلب");
+        throw new Error(data?.detail || "فشل الطلب");
       }
 
-      const data = await response.json();
       setResult(data);
     } catch (err) {
       setError(err.message);
@@ -62,6 +61,7 @@ export default function App() {
       setLoading(false);
     }
   };
+
 
   const loadDemoText = () => {
     setForm({
@@ -107,14 +107,14 @@ export default function App() {
         <section className="results" style={{ marginTop: "24px" }}>
           <div className="card">
             <h2>✅ تم إنشاء الفيديو بنجاح!</h2>
-            <video 
-              controls 
+            <video
+              controls
               style={{ width: "100%", maxHeight: "720px", borderRadius: "12px", marginTop: "16px" }}
               src={`${API_BASE}${result.video_url}?t=${Date.now()}`}
             />
             <div style={{ marginTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
-              <a 
-                className="download" 
+              <a
+                className="download"
                 href={`${API_BASE}${result.video_url}`}
                 download
                 style={{
@@ -129,7 +129,12 @@ export default function App() {
                 ⬇️ تحميل الفيديو
               </a>
               <div style={{ fontSize: "12px", color: "rgba(255, 255, 255, 0.65)", padding: "10px 14px" }}>
-                Run ID: {result.run_id}
+                {result.run_id && (
+                  <div style={{ fontSize: "12px", color: "rgba(255, 255, 255, 0.65)", padding: "10px 14px" }}>
+                    Run ID: {result.run_id}
+                  </div>
+                )}
+
               </div>
             </div>
           </div>

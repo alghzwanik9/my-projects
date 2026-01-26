@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.config import OUTPUTS_DIR
 from pipelines.script_generation import generate_script
+from app.services.ai_service import generate_visual_plan  # ✅ NEW
 
 
 def _build_srt(scenes: list[dict]) -> str:
@@ -38,6 +39,16 @@ def _write_srt(contents: str, outputs_dir: Path) -> str:
 def build_script_output(prompt: str, duration: int, language: str, tone: str) -> dict:
     script = generate_script(prompt=prompt, duration=duration, language=language, tone=tone)
     scenes = [asdict(scene) for scene in script.scenes]
+
     srt_contents = _build_srt(scenes)
     srt_path = _write_srt(srt_contents, OUTPUTS_DIR)
-    return {"script": script.full_script, "scenes": scenes, "srt_path": srt_path}
+
+    # ✅ NEW: بناء خطة المشاهد المرئية من النص النهائي
+    visual_scenes = generate_visual_plan(script.full_script)
+
+    return {
+        "script": script.full_script,
+        "scenes": scenes,
+        "srt_path": srt_path,
+        "visual_scenes": visual_scenes,
+    }

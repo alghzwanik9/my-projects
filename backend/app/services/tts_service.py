@@ -1,101 +1,57 @@
-"""
-خدمة تحويل النص إلى كلام باستخدام Edge TTS (Microsoft)
-يوفر أصوات طبيعية جداً مقارنة بـ gTTS
-"""
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
+import edge_tts
 
-logger = logging.getLogger(__name__)
+# الصوت السعودي الذكوري (نايف)
+VOICE_AR_DEFAULT = "ar-SA-NaayfNeural"
 
-# صوت ذكوري عربي طبيعي من Microsoft Edge TTS
-ARABIC_MALE_VOICE = "ar-SA-HamedNeural"  # صوت ذكوري سعودي طبيعي جداً
+# أمثلة أصوات:
+# "ar-EG-ShakirNeural" -> مصري ذكوري
+# "ar-YE-SalehNeural"  -> يمني ذكوري
+# "en-US-GuyNeural"    -> إنجليزي ذكوري
+# "en-US-JennyNeural"  -> إنجليزي أنثوي
 
-
-async def generate_speech_edge(text: str, output_path: Path, voice: str = ARABIC_MALE_VOICE) -> Path:
+def pick_voice(language: str | None) -> str:
     """
-    إنشاء ملف صوتي باستخدام Edge TTS
-    
-    Args:
-        text: النص المراد تحويله
-        output_path: مسار ملف الصوت الناتج
-        voice: معرف الصوت (افتراضي: صوت ذكوري عربي)
-    
-    Returns:
-        مسار الملف الصوتي المُنشأ
-    
-    Raises:
-        ImportError: إذا كانت المكتبة غير مثبتة
-        ConnectionError: إذا فشل الاتصال
-        Exception: أي أخطاء أخرى
+    اختَر صوت افتراضي حسب اللغة
     """
-    try:
-        import edge_tts
-        import asyncio
-        
-        # إنشاء الملف الصوتي مع timeout
-        communicate = edge_tts.Communicate(text, voice)
-        
-        # محاولة الحفظ مع timeout (30 ثانية)
-        try:
-            await asyncio.wait_for(communicate.save(str(output_path)), timeout=30.0)
-        except asyncio.TimeoutError:
-            logger.error("Edge TTS timeout - connection took too long")
-            raise ConnectionError("Edge TTS connection timeout")
-        
-        logger.info(f"Edge TTS audio generated: {output_path} (voice: {voice})")
-        return output_path
-        
-    except ImportError:
-        logger.warning("edge-tts not installed, falling back to gTTS")
-        raise ImportError("edge-tts library not installed. Install with: pip install edge-tts")
-    except (ConnectionError, OSError, TimeoutError) as e:
-        # أخطاء الاتصال - نرفعها للتعامل معها في main.py
-        logger.error(f"Edge TTS connection error: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Edge TTS failed: {e}", exc_info=True)
-        raise
+    lang = (language or "").strip().lower()
+    if lang == "en":
+        return "en-US-GuyNeural"
+    return VOICE_AR_DEFAULT
 
 
-def generate_speech_sync(text: str, output_path: Path, voice: str = ARABIC_MALE_VOICE) -> Path:
+async def generate_audio_edge(text: str, output_file: str, voice: str) -> None:
     """
-    نسخة متزامنة من generate_speech_edge
+    توليد صوت باستخدام Edge TTS (async)
+    يرمي Exception إذا فشل.
     """
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(generate_speech_edge(text, output_path, voice))
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("TTS text is empty")
+
+    communicate = edge_tts.Communicate(text, voice)
+    await communicate.save(output_file)
 
 
-def get_available_voices(language: str = "ar") -> list[dict]:
+def tts_generate(text: str, out_path: Path | str, language: str | None = "ar", voice: str | None = None) -> Path:
     """
-    الحصول على قائمة الأصوات المتاحة للغة معينة
-    
-    Returns:
-        قائمة من القواميس تحتوي على معلومات الأصوات
+    دالة Sync للاستخدام داخل FastAPI:
+    - تولّد mp3 في out_path
+    - ترجع Path النهائي
     """
-    try:
-        import edge_tts
-        
-        async def _get_voices():
-            voices = await edge_tts.list_voices()
-            return [v for v in voices if language in v.get("Locale", "").lower()]
-        
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(_get_voices())
-    except ImportError:
-        return []
-    except Exception as e:
-        logger.error(f"Failed to get voices: {e}")
-        return []
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    chosen_voice = (voice or "").strip() or pick_voice(language)
+
+    # مهم: uvicorn غالبًا يشغلك بدون event loop هنا، فـ asyncio.run تمام.
+    # لو واجهت خطأ "asyncio.run() cannot be called..." قلّي وبعطيك نسخة run_in_thread.
+    asyncio.run(generate_audio_edge(text=text, output_file=str(out), voice=chosen_voice))
+
+    if not out.exists() or out.stat().st_size == 0:
+        raise RuntimeError("TTS generated file is missing/empty")
+
+    return out
