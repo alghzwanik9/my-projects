@@ -30,3 +30,11 @@ test_image.jpg
 # outputs
 backend/outputs/
 **/outputs/
+# outputs (generated)
+backend/outputs/
+outputs/
+
+# generated media
+*.mp4
+*.mp3
+*.ass

@@ -1,10 +1,13 @@
+# app/main.py
+from __future__ import annotations
+
 import sys
-from pathlib import Path
+import json
 import logging
 import uuid
-import shutil
 import asyncio
 import subprocess
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,68 +15,61 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
+from app.config import OUTPUTS_DIR
 
-# -------------------------------------------------------------------------
-# 1) إعداد المسارات
-# -------------------------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
-sys.path.append(str(BASE_DIR))
+# ✅ Smart scenes planner
+from app.services.scene_planner import plan_scenes
 
-OUTPUT_DIR = BASE_DIR / "outputs"
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-# -------------------------------------------------------------------------
-# 2) استيراد الخدمات (مع التعامل مع الأخطاء)
-# -------------------------------------------------------------------------
-
-# (A) خدمة السكربت (اختياري)
+# اختياري: توليد سكربت
 try:
     from app.services.script_service import generate_script
-except ImportError:
+except Exception:
     generate_script = None
 
-# (B) خدمة الصوت الاحترافي (Edge TTS)
+# Edge TTS (اختياري)
 try:
     from app.services.tts_service import generate_audio_edge
-except ImportError:
+except Exception:
     generate_audio_edge = None
-    print("⚠️ Warning: tts_service.py not found in app/services/")
 
-# (C) مكتبات الصوت الاحتياطية
+# Google TTS fallback (اختياري)
 try:
     from gtts import gTTS
-except ImportError:
+except Exception:
     gTTS = None
 
-
-
-# (D) خدمة الصور (Pollinations / AI Images) - اختياري
-try:
-    from app.services.image_service import generate_images_for_text
-except ImportError:
-    generate_images_for_text = None
-    print("⚠️ Warning: image_service.py or generate_images_for_text not found in app/services/")
-
-# (E) خدمة Pexels فيديو
-# (E) Scene planner + Pexels clips
-try:
-    from app.services.scene_planner import plan_search_terms
-except ImportError:
-    plan_search_terms = None
-    print("⚠️ Warning: scene_planner.py not found in app/services/")
-
+# Pexels + terms (اختياري)
 try:
     from app.services.pexels_video_service import download_stock_clips
-except ImportError:
+except Exception:
     download_stock_clips = None
-    print("⚠️ Warning: pexels_video_service.py not found in app/services/")
+
+try:
+    # هذه غالباً موجودة عندك وتطلع keywords
+    from app.services.scene_planner import plan_search_terms
+except Exception:
+    plan_search_terms = None
+
 
 # -------------------------------------------------------------------------
-# 3) إعداد التطبيق
+# Logging
 # -------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# -------------------------------------------------------------------------
+# Paths
+# -------------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parents[1]  # backend/
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+OUTPUT_DIR = Path(OUTPUTS_DIR)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# -------------------------------------------------------------------------
+# App
+# -------------------------------------------------------------------------
 app = FastAPI()
 
 app.add_middleware(
@@ -84,75 +80,74 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# عرض الملفات: /outputs/<run_id>/shorts.mp4
-app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+# Serve outputs
+app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
+print("SERVING OUTPUTS FROM:", OUTPUTS_DIR)
 
 
 class VideoRequest(BaseModel):
     topic: str = ""
     text: str = ""
     language: str = "ar"
-    # اختياري: عدد الصور
-    images_count: int = 3
+    images_count: int = 0  # حالياً ما نستخدمها
 
 
+def _audio_dur_sec(p: Path) -> float:
+    r = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+            str(p),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+    )
+    try:
+        return float((r.stdout or "0").strip())
+    except:
+        return 0.0
 
 
-# -------------------------------------------------------------------------
-# 4) Endpoint
-# -------------------------------------------------------------------------
 @app.post("/api/generate-video")
 async def generate_video(request: VideoRequest):
     try:
-        request_id = uuid.uuid4().hex
-        request_dir = OUTPUT_DIR / request_id
-        request_dir.mkdir(exist_ok=True)
+        run_id = uuid.uuid4().hex
+        run_dir = OUTPUT_DIR / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
 
         # -----------------------------
-        # (A) تجهيز النص
+        # (A) النص
         # -----------------------------
         input_text = (request.text or "").strip()
 
-        # لو النص فاضي، جرب توليد سكربت من topic
         if not input_text and (request.topic or "").strip() and generate_script:
             logger.info("🧠 Generating script using Gemini...")
             input_text = (generate_script(request.topic) or "").strip()
 
-        # لو ما زال فاضي: استخدم topic نفسه
         if not input_text:
             input_text = (request.topic or "").strip()
 
         if not input_text:
             raise HTTPException(status_code=422, detail="النص فارغ! الرجاء كتابة نص أو عنوان.")
 
-        logger.info(f"📝 Processing Text: {input_text[:60]}...")
+        logger.info(f"📝 Processing Text: {input_text[:80]}...")
 
-        # حفظ السكربت
-        script_path = request_dir / "script.txt"
+        script_path = run_dir / "script.txt"
         script_path.write_text(input_text, encoding="utf-8")
-        
-        
-        # -----------------------------
-        # (A0) توليد صور متوافقة مع النص (اختياري)
-        # -----------------------------
-        if generate_images_for_text:
-            try:
-                images_dir = request_dir / "images"
-                images_count = max(0, min(8, int(request.images_count or 3)))
-                if images_count > 0:
-                    logger.info(f"🖼️ Generating {images_count} background images...")
-                    await asyncio.to_thread(generate_images_for_text, input_text, images_dir, images_count)
-                    logger.info("✅ Images generated.")
-            except Exception as e:
-                logger.warning(f"⚠️ Image generation skipped: {e}")
 
         # -----------------------------
         # (B) توليد الصوت
         # -----------------------------
-        audio_path = request_dir / "voice.mp3"
+        audio_path = run_dir / "voice.mp3"
         audio_generated = False
 
-        # 1) Edge TTS
         if generate_audio_edge:
             try:
                 logger.info("🎙️ Attempt 1: Edge TTS (Naayf)...")
@@ -163,7 +158,6 @@ async def generate_video(request: VideoRequest):
             except Exception as e:
                 logger.warning(f"⚠️ Edge TTS Failed: {e}")
 
-        # 2) Google TTS
         if not audio_generated and gTTS:
             try:
                 logger.info("🎙️ Attempt 2: Google TTS...")
@@ -174,39 +168,59 @@ async def generate_video(request: VideoRequest):
             except Exception as e:
                 logger.warning(f"⚠️ Google TTS Failed: {e}")
 
+        if not audio_generated:
+            raise HTTPException(status_code=500, detail="فشل توليد الصوت (Edge TTS + gTTS).")
+
+        # -----------------------------
+        # (B2) Smart Scenes + Clips
+        # -----------------------------
+        audio_dur = _audio_dur_sec(audio_path)
+        if audio_dur <= 0:
+            audio_dur = 15.0
+
+        plan = plan_scenes(input_text, total_duration=audio_dur, language=request.language)
+        scenes_path = run_dir / "scenes.json"
+        scenes_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         
-        # -----------------------------
-        # (B0) تنزيل مقاطع Pexels (اختياري)
-        # -----------------------------
-        if download_stock_clips:
-            try:
-                clips_dir = request_dir / "clips"
-                clips_dir.mkdir(exist_ok=True)
+        logger.info(f"[SCENES] saved: {scenes_path}")
 
-                # نستخدم topic + كلمات من النص (أبسط شيء: topic ثم النص)
-                terms = []
-                if (request.topic or "").strip():
-                    terms.append(request.topic.strip())
-                terms.append(input_text[:60])  # جزء من النص كبحث
+        logger.info(f"[SCENES] written: {scenes_path}  scenes={len(plan.get('scenes', []))}")
 
-                max_clips = 2  # عدّلها براحتك (1-4 أفضل)
-                logger.info(f"🎞️ Downloading Pexels clips (max={max_clips})...")
-                await asyncio.to_thread(download_stock_clips, terms, clips_dir, max_clips)
-                logger.info("✅ Pexels clips ready (if found).")
-            except Exception as e:
-                logger.warning(f"⚠️ Pexels download skipped: {e}")
+        # تنزيل clips لكل Scene
+        if download_stock_clips and plan_search_terms:
+            clips_root = run_dir / "clips"
+            clips_root.mkdir(parents=True, exist_ok=True)
+
+            for sc in plan.get("scenes", []):
+                scene_id = int(sc.get("id", 1))
+                scene_text = sc.get("text", "")
+
+                scene_dir = clips_root / f"scene_{scene_id:02d}"
+                scene_dir.mkdir(parents=True, exist_ok=True)
+
+                try:
+                    terms = plan_search_terms(scene_text, max_clips=3)
+                    logger.info(f"🎞️ Scene {scene_id} terms: {terms}")
+                    await asyncio.to_thread(download_stock_clips, terms, scene_dir, 3)
+                except Exception as e:
+                    logger.warning(f"⚠️ Scene {scene_id} clips skipped: {e}")
+
+            clips_root = run_dir / "clips"
+            has_any = any(clips_root.rglob("*.mp4")) if clips_root.exists() else False
+            if not has_any:
+                raise HTTPException(status_code=500, detail="No Pexels clips downloaded. Montage cannot run.")
 
         # -----------------------------
-        # (C) رندر الفيديو عبر render_shorts.py
+        # (C) Render via tools/render_shorts.py
         # -----------------------------
-        output_video = request_dir / "shorts.mp4"
+        out_video = run_dir / "shorts.mp4"
         tool_path = BASE_DIR / "tools" / "render_shorts.py"
         python_exec = sys.executable
 
-        cmd = [python_exec, str(tool_path), str(audio_path), str(script_path), str(output_video)]
+        clips_dir = run_dir / "clips"
+        cmd = [python_exec, str(tool_path), str(audio_path), str(script_path), str(out_video), str(run_dir / "clips")]
 
         logger.info("🎬 Rendering video (Calling render_shorts.py)...")
-
         result = await asyncio.to_thread(
             subprocess.run,
             cmd,
@@ -218,16 +232,22 @@ async def generate_video(request: VideoRequest):
         )
 
         if result.stdout:
-            print(f"[RENDER LOG] {result.stdout[:600]}...")
+            print(f"[RENDER LOG]\n{result.stdout[:2000]}")
         if result.stderr:
-            print(f"[RENDER ERR] {result.stderr[:600]}...")
+            print(f"[RENDER ERR]\n{result.stderr[:4000]}")
 
         if result.returncode != 0:
-            logger.error(f"Render Error: {result.stderr}")
-            raise HTTPException(status_code=500, detail=f"Render Failed: {result.stderr[-220:]}")
+            raise HTTPException(status_code=500, detail=f"Render Failed: {(result.stderr or '')[-320:]}")
 
-        logger.info(f"✅ Video Created: {output_video}")
-        return {"video_url": f"/outputs/{request_id}/shorts.mp4"}
+        if not out_video.exists() or out_video.stat().st_size < 50_000:
+            raise HTTPException(status_code=500, detail="Render failed: shorts.mp4 not created or too small")
+
+        logger.info(f"✅ Video Created: {out_video}")
+
+        return {
+            "run_id": run_id,
+            "video_url": f"/outputs/{run_id}/shorts.mp4",
+        }
 
     except HTTPException:
         raise

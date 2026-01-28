@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from pathlib import Path
 import uuid
@@ -21,7 +21,7 @@ class GenerateRequest(BaseModel):
 
 
 @router.post("/generate")
-def generate_video(payload: GenerateRequest) -> dict:
+def generate_video(payload: GenerateRequest, request: Request) -> dict:
     try:
         run_id = uuid.uuid4().hex[:12]
         run_dir = Path(OUTPUTS_DIR) / run_id
@@ -49,23 +49,53 @@ def generate_video(payload: GenerateRequest) -> dict:
         tts_generate(text, audio_path, language=payload.language)
 
         # 4) Pexels clips (اختياري)
+        clips_dir: Path | None = None
         if payload.max_clips > 0:
             clips_dir = run_dir / "clips"
             clips_dir.mkdir(parents=True, exist_ok=True)
             terms = [payload.prompt, text[:60]]
             download_stock_clips(terms, clips_dir, max_clips=payload.max_clips)
 
-        # 5) Render -> short.mp4
-        out_video = run_dir / "short.mp4"
-        render(audio_path, script_path, out_video)
+            # إذا المجلد فاضي بعد التحميل، اعتبره غير موجود
+            has_any_clip = any(clips_dir.glob("*"))
+            if not has_any_clip:
+                clips_dir = None
+
+        # 5) Render -> shorts.mp4 (اسم واحد ثابت بكل المشروع)
+        out_video = run_dir / "shorts.mp4"
+
+        # مرر clips_dir فقط إذا موجود
+        if clips_dir is not None:
+            render(
+                audio_path=audio_path,
+                script_path=script_path,
+                out_video=out_video,
+                clips_dir=clips_dir,
+            )
+        else:
+            render(
+                audio_path=audio_path,
+                script_path=script_path,
+                out_video=out_video,
+            )
+
+        # تأكيد ان الفيديو انولد فعلاً
+        if not out_video.exists() or out_video.stat().st_size < 50_000:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Render failed: {out_video} not created or too small",
+            )
 
         return {
             "run_id": run_id,
-            "video_url": f"/outputs/{run_id}/short.mp4",
-            "script": script_out,
+            "video_url": f"/outputs/{run_id}/shorts.mp4",
+            # إذا تبغاه يرجع السكربت بعد كذا:
+            # "script": script_out,
         }
 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
