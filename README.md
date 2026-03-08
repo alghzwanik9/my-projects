@@ -1,3 +1,4 @@
+🚧 Note: This project is currently under development (Work in Progress).
 # AI Shorts Generator — Arabic
 
 تطبيق لإنشاء فيديوهات قصيرة (Shorts) باللغة العربية مع نصوص تلقائية وصوت.
