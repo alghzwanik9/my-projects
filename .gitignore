@@ -38,3 +38,5 @@ outputs/
 *.mp4
 *.mp3
 *.ass
+desktop.ini
+_write_test.txt

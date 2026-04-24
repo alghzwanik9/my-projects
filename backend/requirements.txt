@@ -1,6 +1,23 @@
-fastapi==0.115.0
-uvicorn==0.30.6
-python-dotenv
-requests
+# ── Core Web Framework ──────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+python-multipart>=0.0.9
+aiofiles>=23.0.0
+
+# ── Configuration & HTTP ─────────────────────────────────────
+python-dotenv>=1.0.0
+requests>=2.31.0
+httpx>=0.24.0
+
+# ── Text-to-Speech ───────────────────────────────────────────
 edge-tts>=6.1.0
-gtts==2.5.1  # Fallback option
+gtts>=2.5.1
+elevenlabs>=2.0.0
+
+# ── AI / Gemini ──────────────────────────────────────────────
+google-generativeai>=0.7.0
+google-genai>=1.0.0
+
+# ── Data Validation ──────────────────────────────────────────
+pydantic>=2.9.0
+pydantic-settings>=2.0.0

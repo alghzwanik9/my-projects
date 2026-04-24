@@ -1,37 +1,47 @@
-import os
-import json
-import logging
+"""
+خدمة AI لتوليد خطط المشاهد البصرية باستخدام Gemini.
+"""
+from __future__ import annotations
 
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
+import logging
+from app.services.gemini_client import generate_json
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-if GEMINI_API_KEY:
+def generate_script(topic: str, language: str = "ar") -> str:
+    """
+    توليد سكربت مشوق للفيديو القصير بناءً على الموضوع.
+    """
+    prompt = f"""
+    You are a professional YouTube Shorts Scriptwriter for highly engaging, viral content.
+    TASK: Create a script for a video about: "{topic}".
+    LANGUAGE: {language}.
+    DURATION: 40-55 seconds.
+
+    STRUCTURE (CRITICAL):
+    1. HOOK (First 3 seconds): Start with a shocking fact, a question, or a bold statement to stop the scroll.
+    2. THE STORY/BODY: Deliver high-value information or a story. Keep sentences short and punchy.
+    3. THE TWIST/VALUE: Add something unexpected or a key takeaway.
+    4. CALL TO ACTION (Final 5 seconds): A quick "Subscribe for more" or "Like if you agree".
+
+    TONE: Exciting, fast-paced, and cinematic.
+    FORMAT: Output ONLY the narration text. No brackets, no labels like [Hook], no titles. Just the raw Arabic text to be spoken.
+    """.strip()
+
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        logger.info("✅ GEMINI_API_KEY loaded, Gemini configured.")
+        from app.services.gemini_client import generate_text
+        text = generate_text(prompt, temperature=0.7)
+        if text:
+            logger.info(f"✅ Gemini Response Received: {text[:100]}...")
+            return text.strip()
+        else:
+            logger.warning("⚠️ Gemini returned EMPTY text.")
+        return topic # Fallback
     except Exception as e:
-        logger.error(f"Gemini Config Error: {e}")
-else:
-    logger.warning("⚠️ GEMINI_API_KEY missing. Set GEMINI_API_KEY in .env (repo root).")
+        logger.error(f"❌ Script Generation Error: {e}")
+        return topic
 
-
-def _extract_json(text: str) -> dict:
-    """
-    Gemini أحيانًا يرجّع نص إضافي حول JSON.
-    هنا نقص أول { وآخر } ونحاول نقرأ JSON بأمان.
-    """
-    raw = (text or "").strip()
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("Gemini did not return valid JSON.")
-
-    clean = raw[start : end + 1]
-    return json.loads(clean)
 
 
 def generate_visual_plan(script_text: str) -> list[dict]:
@@ -48,14 +58,8 @@ def generate_visual_plan(script_text: str) -> list[dict]:
       ...
     ]
     """
-    if not GEMINI_API_KEY:
-        logger.warning("Gemini API Key is missing (GEMINI_API_KEY env var).")
-        return []
-
     if not script_text or not script_text.strip():
         return []
-
-    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = f"""
 You are an expert short-video storyboard writer.
@@ -84,13 +88,11 @@ OUTPUT JSON:
 """.strip()
 
     try:
-        cfg = GenerationConfig(temperature=0.3)
-        resp = model.generate_content(prompt, generation_config=cfg)
+        data = generate_json(prompt, temperature=0.3)
+        if not data:
+            return []
 
-        data = _extract_json(getattr(resp, "text", "") or "")
         scenes = data.get("scenes", []) or []
-
-        # تنظيف وتطبيع بسيط
         cleaned = []
         for s in scenes:
             if not isinstance(s, dict):
@@ -104,15 +106,13 @@ OUTPUT JSON:
             if not text_ar or not search_term or not visual_prompt:
                 continue
 
-            cleaned.append(
-                {
-                    "text_ar": text_ar,
-                    "search_term": search_term,
-                    "visual_prompt": visual_prompt,
-                    "shot": shot,
-                    "motion": motion,
-                }
-            )
+            cleaned.append({
+                "text_ar": text_ar,
+                "search_term": search_term,
+                "visual_prompt": visual_prompt,
+                "shot": shot,
+                "motion": motion,
+            })
 
         logger.info(f"✅ Gemini created {len(cleaned)} visual scenes.")
         return cleaned

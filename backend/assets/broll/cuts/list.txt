@@ -1,0 +1,8 @@
+file 'D:\DEV\ACTIVE\my-projects\my-projects\backend\assets\broll\cuts\cut_000.mp4'
+file 'D:\DEV\ACTIVE\my-projects\my-projects\backend\assets\broll\cuts\cut_001.mp4'
+file 'D:\DEV\ACTIVE\my-projects\my-projects\backend\assets\broll\cuts\cut_002.mp4'
+file 'D:\DEV\ACTIVE\my-projects\my-projects\backend\assets\broll\cuts\cut_003.mp4'
+file 'D:\DEV\ACTIVE\my-projects\my-projects\backend\assets\broll\cuts\cut_004.mp4'
+file 'D:\DEV\ACTIVE\my-projects\my-projects\backend\assets\broll\cuts\cut_005.mp4'
+file 'D:\DEV\ACTIVE\my-projects\my-projects\backend\assets\broll\cuts\cut_006.mp4'
+file 'D:\DEV\ACTIVE\my-projects\my-projects\backend\assets\broll\cuts\cut_007.mp4'

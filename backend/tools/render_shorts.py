@@ -1,417 +1,229 @@
-# tools/render_shorts.py
-# Usage:
-#   python tools/render_shorts.py <audio.mp3> <script.txt> <out.mp4> [clips_dir]
-#
-# Produces 9:16 short video with:
-# - If scenes.json + clips exist -> montage with transitions
-# - Else -> solid background
-# - Arabic captions (ASS via libass)
-# - Audio mixed in
-#
-# Requirements:
-# - ffmpeg, ffprobe in PATH
-# - A font that supports Arabic (recommended: Arial or Noto Naskh Arabic)
-
+# المسار: backend/tools/render_shorts.py
 from __future__ import annotations
 
 import json
-import math
-import re
 import subprocess
-from pathlib import Path
 import sys
+from pathlib import Path
 
-# Fix Windows console encoding (avoid cp1252 issues)
+# --- FIX PATH IMPORT ERROR ---
+# نقوم بإضافة المجلد الرئيسي (backend) إلى مسارات النظام
+# لكي نستطيع استيراد app.services بشكل صحيح
+CURRENT_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = CURRENT_DIR.parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+# الآن يمكننا عمل Import بأمان
 try:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-except Exception:
-    pass
+    from app.services.background_service import get_background_config, generate_ffmpeg_background
+except ImportError:
+    # Fallback
+    def get_background_config(text: str): return {"colors": {"primary": "#0b0f19"}}
+    def generate_ffmpeg_background(config, width=1080, height=1920): return f"color=c=#0b0f19:s={width}x{height}:r=30"
 
-W = 1080
-H = 1920
-FPS = 30
+VIDEO_WIDTH = 1080
+VIDEO_HEIGHT = 1920
+VIDEO_FPS = 30 
+AF_LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
+VF_ENHANCED = "eq=contrast=1.05:saturation=1.2,unsharp=5:5:1.0:3:3:0.0"
 
-# Background (fallback)
-BG_COLOR = "#0b1220"  # dark
-
-# Caption styling (ASS)
-FONT_NAME = "Arial"
-FONT_SIZE = 64
-OUTLINE = 4
-SHADOW = 1
-MARGIN_V = 120  # distance from bottom
-MAX_CHARS_PER_LINE = 22
-
-
-def _run(cmd: list[str]) -> subprocess.CompletedProcess:
-    print("\nRUN CMD:\n", " ".join(cmd))
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-    if p.stdout:
-        print("\n--- STDOUT ---\n", p.stdout[:4000])
-    if p.stderr:
-        print("\n--- STDERR ---\n", p.stderr[:4000])
+def run(cmd: list[str]):
+    # استخدام encoding='utf-8' لتجنب مشاكل الطباعة
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
     if p.returncode != 0:
-        # On Windows returncode may appear as large unsigned -> still treat as error
-        raise RuntimeError(f"ERROR: Command failed (code={p.returncode})\n{p.stderr[-1200:]}")
-    return p
+        print(f"❌ FFmpeg Error:\n{p.stderr[-1000:]}")
+        raise RuntimeError(f"Command failed")
+    return p.stdout.strip()
 
-
-def _require_tools() -> None:
-    _run(["ffmpeg", "-version"])
-    _run(["ffprobe", "-version"])
-
-
-def _ffprobe_duration_sec(audio_path: Path) -> float:
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=nw=1:nk=1",
-        str(audio_path),
-    ]
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+def get_duration(file_path: Path) -> float:
     try:
-        return float((p.stdout or "0").strip())
-    except Exception:
+        out = run([
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(file_path)
+        ])
+        return float(out)
+    except:
         return 0.0
 
+def srt_time(t: float) -> str:
+    ms = int(round(t * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-def clean_text(t: str) -> str:
-    t = (t or "").strip()
-    # normalize spaces
-    t = re.sub(r"\s+", " ", t)
-    # remove weird quotes
-    t = t.replace("“", '"').replace("”", '"').replace("’", "'")
-    return t
-
-
-def _wrap_lines(text: str, max_chars: int = MAX_CHARS_PER_LINE) -> list[str]:
-    # naive wrapping by spaces, works for Arabic reasonably
-    words = (text or "").split()
-    if not words:
-        return []
+def chunk_text(text: str, max_chars: int = 25) -> list[str]:
+    """تقسيم النص ليكون مناسباً لليوتيوب شورتس (كلمات قليلة في كل سطر)"""
+    words = text.split()
     lines = []
-    cur = ""
-    for w in words:
-        if not cur:
-            cur = w
-        elif len(cur) + 1 + len(w) <= max_chars:
-            cur += " " + w
+    current_line = []
+    current_len = 0
+    for word in words:
+        if current_len + len(word) + 1 > max_chars:
+            lines.append(" ".join(current_line))
+            current_line = [word]
+            current_len = len(word)
         else:
-            lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
+            current_line.append(word)
+            current_len += len(word) + 1
+    if current_line: lines.append(" ".join(current_line))
     return lines
 
+def write_srt(text: str, total_dur: float, out_srt: Path):
+    chunks = chunk_text(text)
+    if not chunks: return
+    chunk_dur = total_dur / len(chunks)
+    with open(out_srt, "w", encoding="utf-8") as f:
+        for i, line in enumerate(chunks):
+            start = i * chunk_dur
+            end = (i + 1) * chunk_dur - 0.1
+            if end < start: end = start + 0.05
+            f.write(f"{i+1}\n{srt_time(start)} --> {srt_time(end)}\n{line}\n\n")
 
-def _sec_to_ass_time(sec: float) -> str:
-    sec = max(0.0, float(sec))
-    h = int(sec // 3600)
-    m = int((sec % 3600) // 60)
-    s = sec % 60
-    return f"{h}:{m:02d}:{s:05.2f}"  # H:MM:SS.xx
+def ffmpeg_escape(p: str) -> str:
+    return p.replace("\\", "/").replace(":", r"\:")
 
+def pick_scene_clips(clips_dir: Path) -> list[Path]:
+    all_clips = []
+    if not clips_dir or not clips_dir.exists(): return []
+    
+    scene_folders = sorted(clips_dir.glob("scene_*"))
+    for folder in scene_folders:
+        videos = sorted(list(folder.glob("*.mp4")) + list(folder.glob("*.mov")))
+        if videos: all_clips.append(videos[0])
+    
+    if not all_clips:
+        all_clips = sorted(list(clips_dir.glob("*.mp4")) + list(clips_dir.glob("*.mov")))
+    return all_clips
 
-def make_timed_subs(script_text: str, total_duration: float) -> list[dict]:
-    """
-    Simple timing: splits script into lines then distributes time proportional to words.
-    For best results later we’ll align by words, but this is solid for now.
-    """
-    script_text = clean_text(script_text)
-    if not script_text:
-        return []
-
-    # Split by punctuation pauses
-    chunks = re.split(r"(?<=[\.\!\؟\?…،])\s+", script_text)
-    chunks = [c.strip() for c in chunks if c.strip()]
-    if not chunks:
-        chunks = [script_text]
-
-       # Convert chunks to display lines with wrapping
-    lines = []
-    for ch in chunks:
-        wrapped = _wrap_lines(ch)
-        if wrapped:
-            # keep max 2 lines per chunk to avoid spam
-            if len(wrapped) <= 2:
-                lines.append(r"\N".join(wrapped))
-            else:
-                lines.append(r"\N".join(wrapped[:2]))
-        else:
-            lines.append(ch)
-
-
-
-    # weights by word count
-    weights = []
-    for ch in chunks:
-        wc = len(ch.split())
-        weights.append(max(1, wc))
-
-    wsum = float(sum(weights)) if weights else 1.0
-    # keep a tiny minimum per subtitle
-    min_d = 0.9
-    durs = [max(min_d, total_duration * (w / wsum)) for w in weights]
-
-    # normalize to total_duration
-    diff = total_duration - sum(durs)
-    if abs(diff) > 0.01 and durs:
-        step = diff / len(durs)
-        durs = [max(min_d, d + step) for d in durs]
-
-    subs = []
-    t = 0.0
-    for i, (line, dur) in enumerate(zip(lines, durs), start=1):
-        start = t
-        end = min(total_duration, t + dur)
-        if end - start < 0.2:
-            end = min(total_duration, start + 0.6)
-        subs.append({"i": i, "start": start, "end": end, "text": line})
-        t = end
-        if t >= total_duration:
-            break
-
-    return subs
-
-
-def build_ass(subs: list[dict], ass_path: Path) -> None:
-    header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {W}
-PlayResY: {H}
-ScaledBorderAndShadow: yes
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{FONT_NAME},{FONT_SIZE},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{OUTLINE},{SHADOW},2,80,80,{MARGIN_V},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    lines = [header]
-    for s in subs:
-        start = _sec_to_ass_time(s["start"])
-        end = _sec_to_ass_time(s["end"])
-        text = s["text"].replace("\n", r"\N")
-        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n")
-
-    ass_path.write_text("".join(lines), encoding="utf-8")
-
-
-def _pick_scene_clips(run_dir: Path, clips_dir: Path | None = None) -> list[Path]:
-    clips_root = clips_dir if clips_dir else (run_dir / "clips")
-    if not clips_root.exists():
-        return []
-
-    clips: list[Path] = []
-
-    # 1) الشكل المتوقع: clips/scene_01/*.mp4
-    for scene_dir in sorted(clips_root.glob("scene_*")):
-        mp4s = sorted(scene_dir.glob("*.mp4"))
-        if mp4s:
-            clips.append(mp4s[0])
-
-    # 2) fallback: أي mp4 داخل clips مباشرة/بأي عمق
-    if not clips:
-        mp4s = sorted(clips_root.rglob("*.mp4"))
-        clips = mp4s[:12]  # حد أعلى
-
-    return clips
-
-
-
-def _build_montage_xfade(scene_videos: list[Path], durs: list[float], out_montage: Path, transition_sec: float = 0.35) -> None:
-    if len(scene_videos) == 1:
-        # just copy
-        _run(["ffmpeg", "-y", "-i", str(scene_videos[0]), "-c", "copy", str(out_montage)])
-        return
-
+def build_montage(clips: list[Path], montage_path: Path, target_duration: float):
+    if not clips: return False
+    num_clips = len(clips)
+    clip_time = target_duration / num_clips
+    
     inputs = []
-    for v in scene_videos:
-        inputs += ["-i", str(v)]
-
-    fc = []
-    for i in range(len(scene_videos)):
-        fc.append(f"[{i}:v]setpts=PTS-STARTPTS[v{i}];")
-
-    acc = 0.0
-    cur_label = "v0"
-    for i in range(1, len(scene_videos)):
-        acc += durs[i - 1]
-        offset = acc - (transition_sec * i)
-        nxt = f"v{i}"
-        out = f"vx{i}"
-        fc.append(
-            f"[{cur_label}][{nxt}]xfade=transition=fade:duration={transition_sec}:offset={max(0.0, offset):.3f}[{out}];"
+    filter_complex = []
+    
+    for i, clip in enumerate(clips):
+        inputs.extend(["-i", str(clip)])
+        filter_complex.append(
+            f"[{i}:v]scale=w='max(iw*1920/ih,1080)':h='max(1920,ih*1080/iw)':force_original_aspect_ratio=increase,"
+            f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
+            f"setsar=1,"
+            f"loop=loop=-1:size=32767:start=0,"
+            f"trim=duration={clip_time:.3f},setpts=PTS-STARTPTS[v{i}]"
         )
-        cur_label = out
+        
+    concat_inputs = "".join([f"[v{i}]" for i in range(num_clips)])
+    filter_complex.append(f"{concat_inputs}concat=n={num_clips}:v=1:a=0[outv]")
+    
+    cmd = ["ffmpeg", "-y"]
+    cmd.extend(inputs)
+    cmd.extend(["-filter_complex", ";".join(filter_complex)])
+    cmd.extend(["-map", "[outv]"])
+    cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", str(montage_path)])
+    
+    print(f"🎬 Building High-Quality Montage...")
+    run(cmd)
+    return True
 
-    filter_complex = "".join(fc)
+def main():
+    # 🔥 FIX ENCODING ERROR ON WINDOWS 🔥
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout.reconfigure(encoding='utf-8')
+    if sys.stderr.encoding != 'utf-8':
+        sys.stderr.reconfigure(encoding='utf-8')
 
-    cmd = [
-        "ffmpeg", "-y",
-        *inputs,
-        "-filter_complex", filter_complex,
-        "-map", f"[{cur_label}]",
-        "-r", str(FPS),
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        str(out_montage),
-    ]
-    _run(cmd)
-
-
-def render(audio_path: Path, script_path: Path, out_video: Path, clips_dir: Path | None = None) -> None:
-    _require_tools()
-
-    if not audio_path.exists():
-        raise FileNotFoundError(f"Audio not found: {audio_path}")
-    if not script_path.exists():
-        raise FileNotFoundError(f"Script not found: {script_path}")
-
-    out_video.parent.mkdir(parents=True, exist_ok=True)
-
-    script_text = clean_text(script_path.read_text(encoding="utf-8", errors="ignore"))
-    duration = _ffprobe_duration_sec(audio_path)
-    if duration <= 0:
-        duration = 15.0
-
-    # captions.ass
-    ass_path = out_video.parent / "captions.ass"
-    subs = make_timed_subs(script_text, duration)
-    build_ass(subs, ass_path)
-
-    # Windows: escape ":" in drive letter for filter parsing
-    ass_filter_path = ass_path.resolve().as_posix()
-    ass_escaped = ass_filter_path.replace(":", r"\:")
-    # ✅ IMPORTANT FIX (your working solution)
-    vf_ass = f"ass=filename='{ass_escaped}'"
-
-    run_dir = out_video.parent
-    scenes_path = run_dir / "scenes.json"
-    clips = _pick_scene_clips(run_dir, clips_dir=clips_dir)
-
-    # =========================
-    # SMART MONTAGE PATH
-    # =========================
-    if scenes_path.exists() and clips:
-        data = json.loads(scenes_path.read_text(encoding="utf-8", errors="ignore") or "{}")
-        scenes = data.get("scenes") or []
-        if scenes:
-            temp_dir = run_dir / "_tmp_scenes"
-            temp_dir.mkdir(parents=True, exist_ok=True)
-
-            scene_videos: list[Path] = []
-            durs: list[float] = []
-
-            for i, sc in enumerate(scenes):
-                dur_i = float(sc.get("dur", 3.5))
-                dur_i = max(1.5, dur_i)
-                durs.append(dur_i)
-
-                clip = clips[i % len(clips)]
-                out_i = temp_dir / f"scene_{i+1:02d}.mp4"
-
-                # cinematic: scale/crop to 9:16 + trim
-                vf_scene = (
-                    f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-                    f"crop={W}:{H},fps={FPS},"
-                    f"trim=0:{dur_i},setpts=PTS-STARTPTS"
-                )
-
-                cmd_scene = [
-                    "ffmpeg", "-y",
-                    "-i", str(clip),
-                    "-vf", vf_scene,
-                    "-t", str(dur_i),
-                    "-an",
-                    "-c:v", "libx264",
-                    "-pix_fmt", "yuv420p",
-                    str(out_i),
-                ]
-                _run(cmd_scene)
-                scene_videos.append(out_i)
-
-            montage = run_dir / "_montage.mp4"
-            transition_sec = float((data.get("style") or {}).get("transition_sec", 0.35))
-            _build_montage_xfade(scene_videos, durs, montage, transition_sec=transition_sec)
-
-            # Add captions + audio
-            cmd_final = [
-                "ffmpeg", "-y",
-                "-i", str(montage),
-                "-i", str(audio_path),
-                "-vf", vf_ass,
-                "-shortest",
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
-                str(out_video),
-            ]
-            _run(cmd_final)
-
-            if not out_video.exists() or out_video.stat().st_size < 50_000:
-                raise RuntimeError(f"Render finished but output missing/too small: {out_video}")
-            return
-
-    # =========================
-    # FALLBACK: SOLID BG PATH
-    # =========================
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        f"color=c={BG_COLOR}:s={W}x{H}:r={FPS}:d={duration}",
-        "-i",
-        str(audio_path),
-        "-vf",
-        vf_ass,
-        "-shortest",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-movflags",
-        "+faststart",
-        str(out_video),
-    ]
-    _run(cmd)
-
-    if not out_video.exists() or out_video.stat().st_size < 50_000:
-        raise RuntimeError(f"Render finished but output missing/too small: {out_video}")
-
-
-def main() -> None:
-    import sys
-
-    if len(sys.argv) < 4:
-        print("Usage: python tools/render_shorts.py <audio.mp3> <script.txt> <out.mp4> [clips_dir]")
-        raise SystemExit(2)
+    if len(sys.argv) < 3:
+        print("Usage error")
+        sys.exit(1)
 
     audio_path = Path(sys.argv[1]).resolve()
-    script_path = Path(sys.argv[2]).resolve()
-    out_video = Path(sys.argv[3]).resolve()
-    clips_dir = None
-    if len(sys.argv) >= 5:
-        clips_dir = Path(sys.argv[4]).resolve()
+    text_path_arg = Path(sys.argv[2])
+    text = text_path_arg.read_text(encoding="utf-8").strip() if text_path_arg.exists() else sys.argv[2]
+    out_mp4 = Path(sys.argv[3]).resolve()
+    clips_dir = Path(sys.argv[4]).resolve() if len(sys.argv) > 4 else None
+    music_path = Path(sys.argv[5]).resolve() if len(sys.argv) > 5 else None
 
-    render(audio_path, script_path, out_video, clips_dir=clips_dir)
-    print(f"\nDone: {out_video}")
+    # 1. المدة والترجمة
+    audio_dur = get_duration(audio_path)
+    srt_path = audio_path.parent / "captions.srt"
+    write_srt(text, audio_dur, srt_path)
+    srt_ff = ffmpeg_escape(str(srt_path))
 
+    # 2. بناء المونتاج
+    montage_path = audio_path.parent / "montage_temp.mp4"
+    clips = pick_scene_clips(clips_dir) if clips_dir else []
+    has_video = False
+    if clips:
+        try:
+            has_video = build_montage(clips, montage_path, audio_dur)
+        except Exception as e:
+            print(f"⚠️ Montage Error: {e}")
+
+    # الترجمة: تصميم احترافي (صغير، في الأسفل، مع ظل خفيف)
+    style = (
+        "FontName=Cairo,Fontsize=22,"
+        "PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,BackColour=&H00000000,"
+        "BorderStyle=1,Outline=1,Shadow=1,"
+        "Alignment=2,MarginV=60,Bold=1"
+    )
+    subtitles_filter = f"subtitles='{srt_ff}':force_style='{style}'"
+    
+    final_inputs = []
+    filter_chain = []
+    
+    if has_video and montage_path.exists():
+        final_inputs.extend(["-i", str(montage_path)])
+        filter_chain.append(
+            f"[0:v]{VF_ENHANCED},{subtitles_filter}[vfinal]"
+        )
+    else:
+        # خلفية داكنة نظيفة كـ fallback
+        final_inputs.extend([
+            "-f", "lavfi",
+            "-i", f"color=c=#0d1b2a:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:r=30:d={audio_dur}"
+        ])
+        filter_chain.append(
+            f"[0:v]{subtitles_filter}[vfinal]"
+        )
+
+    final_inputs.extend(["-i", str(audio_path)])
+    
+    if music_path and music_path.exists():
+        final_inputs.extend(["-stream_loop", "-1", "-i", str(music_path)])
+        audio_filter = (
+            f"[2:a]volume=0.15[music];"
+            f"[1:a]volume=1.0[voice];"
+            f"[music][voice]amix=inputs=2:duration=first:dropout_transition=2,{AF_LOUDNORM}[afinal]"
+        )
+    else:
+        audio_filter = f"[1:a]{AF_LOUDNORM}[afinal]"
+    
+    filter_chain.append(audio_filter)
+
+    cmd = ["ffmpeg", "-y"]
+    cmd.extend(final_inputs)
+    cmd.extend(["-filter_complex", ";".join(filter_chain)])
+    cmd.extend(["-map", "[vfinal]", "-map", "[afinal]"])
+    cmd.extend([
+        "-c:v", "libx264", "-profile:v", "high", "-preset", "slower", "-crf", "15",
+        "-c:a", "aac", "-b:a", "256k",
+        "-movflags", "+faststart", "-pix_fmt", "yuv420p", str(out_mp4)
+    ])
+
+    print("🚀 Rendering High-Quality Final Video...")
+    run(cmd)
+
+    if montage_path.exists():
+        try: montage_path.unlink() 
+        except: pass
+
+    print(json.dumps({"status": "success", "video": str(out_mp4)}))
 
 if __name__ == "__main__":
     main()
